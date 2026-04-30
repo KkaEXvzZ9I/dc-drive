@@ -28,7 +28,40 @@ import {
 
 const store = new JsonStore(path.join(config.dataDir, "store.json"));
 const discord = new DiscordClient(config);
+const uploadInitBuckets = new Map();
 
+const DEFAULT_UPLOAD_SETTINGS = {
+  maxFileSizeBytes: 0,
+  maxUserStorageBytes: 0,
+  maxFilesPerUser: 0,
+  uploadInitsPerMinute: 20
+};
+
+const SECURITY_HEADERS = {
+  "X-Content-Type-Options": "nosniff",
+  "Referrer-Policy": "no-referrer",
+  "X-Frame-Options": "DENY",
+  "Cross-Origin-Resource-Policy": "same-origin"
+};
+
+const HTML_SECURITY_HEADERS = {
+  ...SECURITY_HEADERS,
+  "Content-Security-Policy": [
+    "default-src 'self'",
+    "script-src 'self'",
+    "style-src 'self'",
+    "img-src 'self' https://cdn.discordapp.com data:",
+    "media-src 'self' blob:",
+    "frame-src 'self'",
+    "connect-src 'self'",
+    "object-src 'none'",
+    "base-uri 'self'",
+    "form-action 'self'",
+    "frame-ancestors 'none'"
+  ].join("; ")
+};
+
+assertSafeSessionSecret();
 await store.init();
 await ensureAccountAdmin();
 cleanupExpiredSessions();
@@ -174,6 +207,16 @@ async function api(req, res, url) {
     return listUsers(res);
   }
 
+  if (req.method === "GET" && url.pathname === "/api/settings") {
+    requireAdmin(req);
+    return sendJson(res, 200, { settings: currentUploadSettings() });
+  }
+
+  if (req.method === "PATCH" && url.pathname === "/api/settings") {
+    requireAdmin(req);
+    return updateSettings(req, res);
+  }
+
   const userMatch = /^\/api\/users\/([^/]+)$/.exec(url.pathname);
   if (userMatch) {
     const auth = requireAdmin(req);
@@ -231,6 +274,25 @@ async function api(req, res, url) {
   }
 
   throw new HttpError(404, "API route not found");
+}
+
+async function updateSettings(req, res) {
+  const body = await readJson(req);
+  const settings = await store.update((data) => {
+    const current = normalizeUploadSettings(data.settings);
+    const next = { ...current };
+
+    for (const key of Object.keys(DEFAULT_UPLOAD_SETTINGS)) {
+      if (Object.hasOwn(body, key)) {
+        next[key] = parseLimitSetting(body[key], key);
+      }
+    }
+
+    data.settings = next;
+    return structuredClone(next);
+  });
+
+  sendJson(res, 200, { settings });
 }
 
 function listUsers(res) {
@@ -300,6 +362,10 @@ async function initUpload(req, res, auth) {
     throw new HttpError(400, "Invalid file size");
   }
 
+  const settings = currentUploadSettings();
+  checkUploadInitRate(auth.user.id, settings);
+  assertUploadAllowed(store.snapshot(), auth.user.id, size, settings);
+
   const userSpace = await ensureUserSpace(auth.user);
   const fileId = randomId("file_");
   const now = new Date().toISOString();
@@ -325,6 +391,7 @@ async function initUpload(req, res, auth) {
   };
 
   await store.update((data) => {
+    assertUploadAllowed(data, auth.user.id, size, settings);
     data.files[fileId] = file;
   });
 
@@ -334,7 +401,10 @@ async function initUpload(req, res, auth) {
 async function uploadChunk(req, res, auth, fileId, index) {
   let file = getOwnedFile(auth.user.id, fileId);
   if (file.status === "complete" && file.chunks[String(index)]) {
-    return sendJson(res, 200, { file: publicFile(file), chunk: file.chunks[String(index)] });
+    return sendJson(res, 200, {
+      file: publicFile(file),
+      chunk: publicChunk(file.chunks[String(index)])
+    });
   }
 
   if (file.status !== "uploading") {
@@ -346,7 +416,10 @@ async function uploadChunk(req, res, auth, fileId, index) {
   }
 
   if (file.chunks[String(index)]) {
-    return sendJson(res, 200, { file: publicFile(file), chunk: file.chunks[String(index)] });
+    return sendJson(res, 200, {
+      file: publicFile(file),
+      chunk: publicChunk(file.chunks[String(index)])
+    });
   }
 
   const expectedSize = Math.min(file.chunkSize, file.size - index * file.chunkSize);
@@ -407,7 +480,7 @@ async function uploadChunk(req, res, auth, fileId, index) {
     return structuredClone(current);
   });
 
-  sendJson(res, 201, { file: publicFile(file), chunk });
+  sendJson(res, 201, { file: publicFile(file), chunk: publicChunk(chunk) });
 }
 
 async function deleteFile(res, auth, fileId) {
@@ -823,6 +896,98 @@ function publicFile(file) {
   };
 }
 
+function publicChunk(chunk) {
+  return {
+    index: chunk.index,
+    size: chunk.size,
+    sha256: chunk.sha256,
+    createdAt: chunk.createdAt
+  };
+}
+
+function currentUploadSettings() {
+  return normalizeUploadSettings(store.snapshot().settings);
+}
+
+function normalizeUploadSettings(settings = {}) {
+  return {
+    maxFileSizeBytes: normalizeLimitSetting(settings.maxFileSizeBytes, DEFAULT_UPLOAD_SETTINGS.maxFileSizeBytes),
+    maxUserStorageBytes: normalizeLimitSetting(
+      settings.maxUserStorageBytes,
+      DEFAULT_UPLOAD_SETTINGS.maxUserStorageBytes
+    ),
+    maxFilesPerUser: normalizeLimitSetting(settings.maxFilesPerUser, DEFAULT_UPLOAD_SETTINGS.maxFilesPerUser),
+    uploadInitsPerMinute: normalizeLimitSetting(
+      settings.uploadInitsPerMinute,
+      DEFAULT_UPLOAD_SETTINGS.uploadInitsPerMinute
+    )
+  };
+}
+
+function normalizeLimitSetting(value, fallback) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number < 0) {
+    return fallback;
+  }
+  return Math.floor(number);
+}
+
+function parseLimitSetting(value, name) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number < 0 || number > Number.MAX_SAFE_INTEGER) {
+    throw new HttpError(400, `Invalid setting: ${name}`);
+  }
+  return Math.floor(number);
+}
+
+function assertUploadAllowed(data, userId, incomingSize, settings) {
+  if (settings.maxFileSizeBytes > 0 && incomingSize > settings.maxFileSizeBytes) {
+    throw new HttpError(413, "File exceeds the configured single-file limit");
+  }
+
+  const usage = storageUsageForUser(data, userId);
+  if (settings.maxFilesPerUser > 0 && usage.fileCount >= settings.maxFilesPerUser) {
+    throw new HttpError(403, "Account file limit reached");
+  }
+
+  if (
+    settings.maxUserStorageBytes > 0 &&
+    usage.storageBytes + incomingSize > settings.maxUserStorageBytes
+  ) {
+    throw new HttpError(403, "Account storage quota exceeded");
+  }
+}
+
+function storageUsageForUser(data, userId) {
+  let fileCount = 0;
+  let storageBytes = 0;
+  for (const file of Object.values(data.files || {})) {
+    if (file.ownerId !== userId || file.status === "deleted") {
+      continue;
+    }
+    fileCount += 1;
+    storageBytes += Number(file.size) || 0;
+  }
+  return { fileCount, storageBytes };
+}
+
+function checkUploadInitRate(userId, settings) {
+  const limit = settings.uploadInitsPerMinute;
+  if (limit <= 0) {
+    return;
+  }
+
+  const now = Date.now();
+  const windowStart = now - 60 * 1000;
+  const timestamps = (uploadInitBuckets.get(userId) || []).filter((time) => time >= windowStart);
+  if (timestamps.length >= limit) {
+    throw new HttpError(429, "Too many upload requests");
+  }
+
+  timestamps.push(now);
+  uploadInitBuckets.set(userId, timestamps);
+}
+
 async function staticFile(req, res, url) {
   if (req.method !== "GET" && req.method !== "HEAD") {
     throw new HttpError(405, "Method not allowed");
@@ -837,7 +1002,8 @@ async function staticFile(req, res, url) {
   res.writeHead(200, {
     "Content-Type": publicFileType(finalPath),
     "Content-Length": body.length,
-    "Cache-Control": finalPath.endsWith("index.html") ? "no-store" : "public, max-age=3600"
+    "Cache-Control": finalPath.endsWith("index.html") ? "no-store" : "public, max-age=3600",
+    ...(finalPath.endsWith("index.html") ? HTML_SECURITY_HEADERS : SECURITY_HEADERS)
   });
   if (req.method === "HEAD") {
     res.end();
@@ -848,9 +1014,33 @@ async function staticFile(req, res, url) {
 
 function sendNoContentWithCookie(res, cookie) {
   res.writeHead(204, {
+    ...SECURITY_HEADERS,
     "Set-Cookie": cookie
   });
   res.end();
+}
+
+function assertSafeSessionSecret() {
+  const weakSecret =
+    !config.sessionSecret ||
+    config.sessionSecret === "dev-only-change-me" ||
+    config.sessionSecret.length < 32;
+  if (!weakSecret) {
+    return;
+  }
+
+  if (process.env.NODE_ENV === "production" || !isLocalBaseUrl(config.publicBaseUrl)) {
+    throw new Error("SESSION_SECRET must be set to a random value of at least 32 characters");
+  }
+}
+
+function isLocalBaseUrl(value) {
+  try {
+    const hostname = new URL(value).hostname;
+    return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";
+  } catch {
+    return false;
+  }
 }
 
 async function ensureAccountAdmin() {
@@ -906,10 +1096,9 @@ function handleError(_req, res, error) {
   }
 
   if (error instanceof DiscordApiError) {
-    console.error(error.message, error.details);
+    console.error(redactSensitive(error.message), redactSensitive(error.details));
     return sendJson(res, 502, {
-      error: "Discord API request failed",
-      details: error.details ? safeDiscordDetails(error.details) : undefined
+      error: "Discord API request failed"
     });
   }
 
@@ -917,6 +1106,9 @@ function handleError(_req, res, error) {
   sendJson(res, 500, { error: "Internal server error" });
 }
 
-function safeDiscordDetails(details) {
-  return String(details).slice(0, 800);
+function redactSensitive(value) {
+  return String(value || "")
+    .replace(/\/webhooks\/([^/?#\s]+)\/([^/?#\s]+)/g, "/webhooks/$1/[redacted]")
+    .replace(/"token"\s*:\s*"[^"]+"/g, '"token":"[redacted]"')
+    .slice(0, 1000);
 }

@@ -1187,6 +1187,21 @@ mark {
   overflow: hidden;
 }
 
+.settings-form {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr)) auto;
+  align-items: end;
+  gap: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-soft);
+  padding: 12px;
+}
+
+.settings-form .login-button {
+  min-width: 112px;
+}
+
 .account-list-head,
 .account-row {
   display: grid;
@@ -1502,6 +1517,15 @@ mark {
     gap: 9px;
   }
 
+  .settings-form {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .settings-form .login-button {
+    grid-column: 1 / -1;
+    width: 100%;
+  }
+
   .account-actions {
     justify-content: flex-start;
   }
@@ -1524,6 +1548,10 @@ mark {
   .dialog-actions {
     display: grid;
     grid-template-columns: 1fr 1fr;
+  }
+
+  .settings-form {
+    grid-template-columns: 1fr;
   }
 
   .dialog-actions .login-button,

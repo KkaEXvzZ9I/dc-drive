@@ -20,7 +20,9 @@ const state = {
   loading: false,
   renameTargetId: null,
   users: [],
-  usersLoading: false
+  usersLoading: false,
+  settings: null,
+  settingsLoading: false
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -70,6 +72,12 @@ const els = {
   accountList: $("#accountList"),
   accountCloseButton: $("#accountCloseButton"),
   refreshAccountsButton: $("#refreshAccountsButton"),
+  settingsForm: $("#settingsForm"),
+  maxFileSizeInput: $("#maxFileSizeInput"),
+  maxUserStorageInput: $("#maxUserStorageInput"),
+  maxFilesInput: $("#maxFilesInput"),
+  uploadRateInput: $("#uploadRateInput"),
+  settingsSaveButton: $("#settingsSaveButton"),
   toastRegion: $("#toastRegion")
 };
 
@@ -172,6 +180,7 @@ function bindEvents() {
   els.clearUploadsButton.addEventListener("click", clearFinishedUploads);
   els.accountAdminButton.addEventListener("click", openAccountDialog);
   els.refreshAccountsButton.addEventListener("click", () => loadAccounts());
+  els.settingsForm.addEventListener("submit", submitSettings);
   els.accountCloseButton.addEventListener("click", closeAccountDialog);
   els.accountDialog.addEventListener("click", (event) => {
     if (event.target === els.accountDialog) {
@@ -823,9 +832,10 @@ async function openAccountDialog() {
   }
 
   els.accountDialog.showModal();
-  if (state.users.length === 0) {
+  if (state.users.length === 0 || !state.settings) {
     await loadAccounts({ quiet: true });
   } else {
+    renderSettingsForm();
     renderAccountList();
   }
 }
@@ -840,12 +850,19 @@ async function loadAccounts({ quiet = false } = {}) {
   }
 
   state.usersLoading = true;
+  state.settingsLoading = true;
   els.refreshAccountsButton.disabled = true;
+  els.settingsSaveButton.disabled = true;
+  renderSettingsForm();
   renderAccountList();
 
   try {
-    const result = await api("/api/users");
-    state.users = result.users.map(normalizeUser);
+    const [usersResult, settingsResult] = await Promise.all([
+      api("/api/users"),
+      api("/api/settings")
+    ]);
+    state.users = usersResult.users.map(normalizeUser);
+    state.settings = normalizeSettings(settingsResult.settings);
     renderAdminControls();
     if (!quiet) {
       toast("帳號已更新");
@@ -854,7 +871,10 @@ async function loadAccounts({ quiet = false } = {}) {
     toast(error.message, "error");
   } finally {
     state.usersLoading = false;
+    state.settingsLoading = false;
     els.refreshAccountsButton.disabled = false;
+    els.settingsSaveButton.disabled = false;
+    renderSettingsForm();
     renderAccountList();
   }
 }
@@ -874,6 +894,65 @@ function normalizeUser(user) {
     storageBytes: Number(user.storageBytes) || 0,
     activeSessions: Number(user.activeSessions) || 0
   };
+}
+
+function normalizeSettings(settings = {}) {
+  return {
+    maxFileSizeBytes: Number(settings.maxFileSizeBytes) || 0,
+    maxUserStorageBytes: Number(settings.maxUserStorageBytes) || 0,
+    maxFilesPerUser: Number(settings.maxFilesPerUser) || 0,
+    uploadInitsPerMinute: Number(settings.uploadInitsPerMinute) || 0
+  };
+}
+
+function renderSettingsForm() {
+  const settings = state.settings || normalizeSettings();
+  els.maxFileSizeInput.value = bytesToMiB(settings.maxFileSizeBytes);
+  els.maxUserStorageInput.value = bytesToGiB(settings.maxUserStorageBytes);
+  els.maxFilesInput.value = String(settings.maxFilesPerUser);
+  els.uploadRateInput.value = String(settings.uploadInitsPerMinute);
+  const disabled = state.settingsLoading || !state.user?.isAdmin;
+  for (const input of [
+    els.maxFileSizeInput,
+    els.maxUserStorageInput,
+    els.maxFilesInput,
+    els.uploadRateInput
+  ]) {
+    input.disabled = disabled;
+  }
+  els.settingsSaveButton.disabled = disabled;
+}
+
+async function submitSettings(event) {
+  event.preventDefault();
+  if (!state.user?.isAdmin) {
+    return;
+  }
+
+  const payload = {
+    maxFileSizeBytes: mibToBytes(els.maxFileSizeInput.value),
+    maxUserStorageBytes: gibToBytes(els.maxUserStorageInput.value),
+    maxFilesPerUser: positiveInteger(els.maxFilesInput.value),
+    uploadInitsPerMinute: positiveInteger(els.uploadRateInput.value)
+  };
+
+  state.settingsLoading = true;
+  renderSettingsForm();
+
+  try {
+    const result = await api("/api/settings", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    state.settings = normalizeSettings(result.settings);
+    toast("限制設定已儲存");
+  } catch (error) {
+    toast(error.message, "error");
+  } finally {
+    state.settingsLoading = false;
+    renderSettingsForm();
+  }
 }
 
 function renderAccountList() {
@@ -1295,6 +1374,30 @@ function formatBytes(bytes) {
   const exponent = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
   const value = bytes / 1024 ** exponent;
   return `${value.toFixed(value >= 10 || exponent === 0 ? 0 : 1)} ${units[exponent]}`;
+}
+
+function bytesToMiB(bytes) {
+  return String(Math.floor((Number(bytes) || 0) / 1024 / 1024));
+}
+
+function bytesToGiB(bytes) {
+  return String(Math.floor((Number(bytes) || 0) / 1024 / 1024 / 1024));
+}
+
+function mibToBytes(value) {
+  return positiveInteger(value) * 1024 * 1024;
+}
+
+function gibToBytes(value) {
+  return positiveInteger(value) * 1024 * 1024 * 1024;
+}
+
+function positiveInteger(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number < 0) {
+    return 0;
+  }
+  return Math.floor(number);
 }
 
 function formatDate(value) {

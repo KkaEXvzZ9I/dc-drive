@@ -299,6 +299,25 @@
             </button>
           </div>
         </header>
+        <form id="settingsForm" class="settings-form">
+          <label class="field-label">
+            <span>單檔上限 MB</span>
+            <input id="maxFileSizeInput" type="number" min="0" step="1" inputmode="numeric" placeholder="0 不限" />
+          </label>
+          <label class="field-label">
+            <span>每人容量 GB</span>
+            <input id="maxUserStorageInput" type="number" min="0" step="1" inputmode="numeric" placeholder="0 不限" />
+          </label>
+          <label class="field-label">
+            <span>每人檔案數</span>
+            <input id="maxFilesInput" type="number" min="0" step="1" inputmode="numeric" placeholder="0 不限" />
+          </label>
+          <label class="field-label">
+            <span>每分鐘新上傳</span>
+            <input id="uploadRateInput" type="number" min="0" step="1" inputmode="numeric" placeholder="0 不限" />
+          </label>
+          <button id="settingsSaveButton" class="login-button" type="submit">儲存限制</button>
+        </form>
         <div class="account-list-head">
           <span>帳號</span>
           <span>狀態</span>

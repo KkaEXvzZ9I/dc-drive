@@ -220,7 +220,7 @@ export class DiscordClient {
       if (!response.ok) {
         throw new DiscordApiError(
           response.status,
-          `Discord API ${method} ${path} failed with ${response.status}`,
+          `Discord API ${method} ${redactDiscordPath(path)} failed with ${response.status}`,
           text
         );
       }
@@ -234,6 +234,13 @@ export class DiscordClient {
 
     throw new DiscordApiError(429, `Discord API ${method} ${path} kept rate limiting`);
   }
+}
+
+function redactDiscordPath(path) {
+  return String(path).replace(
+    /\/webhooks\/([^/?#]+)\/([^/?#]+)/g,
+    "/webhooks/$1/[redacted]"
+  );
 }
 
 async function retryAfterMs(response) {

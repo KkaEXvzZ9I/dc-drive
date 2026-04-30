@@ -103,10 +103,13 @@ http://localhost:8787
 - 將管理員改回一般使用者。
 - 停用帳號。
 - 重新啟用帳號。
+- 設定單檔上限、每人容量、每人檔案數、每分鐘新上傳數。
 
 系統會避免管理員停用自己，或把最後一個可用管理員降級，避免整個面板失去管理權限。
 
 如果是舊資料升級，server 啟動時會自動補上角色；若沒有任何管理員，會把最早建立或最早登入的帳號設為管理員。
+
+限制設定中的 `0` 代表不限。每分鐘新上傳數限制的是新的上傳工作建立次數，不是單一大檔案的 chunk 數。
 
 ## 資料儲存
 
@@ -130,6 +133,15 @@ data/store.json
 真正的檔案 bytes 會存在 Discord message attachments。下載與預覽時，伺服器會透過儲存的 message ID 重新向 Discord 取得目前可用的 attachment URL，再把內容串流回瀏覽器。
 
 請保護好 `data/store.json` 與 `.env`，不要公開或提交到公開 repo。
+
+## 安全性
+
+- 瀏覽器 API 不會回傳 Discord webhook token。
+- Discord webhook token 在 server 錯誤訊息中會被遮罩。
+- Discord API 失敗時，瀏覽器只會收到一般錯誤，不會收到 Discord 原始錯誤細節。
+- API 與靜態檔案會附加基本安全 headers。
+- 公開部署或 `NODE_ENV=production` 時，`SESSION_SECRET` 必須是至少 32 字元的自訂隨機值。
+- `.env` 和 `data/` 已在 `.gitignore`，請不要提交到公開 repo。
 
 ## 環境變數
 

@@ -89,19 +89,32 @@ export function sendJson(res, status, payload, headers = {}) {
   res.writeHead(status, {
     "Content-Type": "application/json; charset=utf-8",
     "Content-Length": body.length,
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+    "X-Frame-Options": "DENY",
+    "Cross-Origin-Resource-Policy": "same-origin",
     ...headers
   });
   res.end(body);
 }
 
 export function sendNoContent(res) {
-  res.writeHead(204);
+  res.writeHead(204, {
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+    "X-Frame-Options": "DENY",
+    "Cross-Origin-Resource-Policy": "same-origin"
+  });
   res.end();
 }
 
 export function redirect(res, location, headers = {}) {
   res.writeHead(302, {
     Location: location,
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+    "X-Frame-Options": "DENY",
+    "Cross-Origin-Resource-Policy": "same-origin",
     ...headers
   });
   res.end();

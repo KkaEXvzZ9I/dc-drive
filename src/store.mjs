@@ -6,7 +6,13 @@ function freshData() {
     version: 1,
     users: {},
     sessions: {},
-    files: {}
+    files: {},
+    settings: {
+      maxFileSizeBytes: 0,
+      maxUserStorageBytes: 0,
+      maxFilesPerUser: 0,
+      uploadInitsPerMinute: 20
+    }
   };
 }
 
@@ -27,7 +33,11 @@ export class JsonStore {
         ...parsed,
         users: parsed.users || {},
         sessions: parsed.sessions || {},
-        files: parsed.files || {}
+        files: parsed.files || {},
+        settings: {
+          ...freshData().settings,
+          ...(parsed.settings || {})
+        }
       };
     } catch (error) {
       if (error.code !== "ENOENT") {
